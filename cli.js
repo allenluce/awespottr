@@ -4,7 +4,7 @@ var _ = require('lodash');
 var AWS = require('aws-sdk');
 var chalk = require('chalk');
 var moment = require('moment');
-var program = require('commander');
+var commander = require('commander');
 
 var lowPrice = false;
 var lowZone = false;
@@ -20,6 +20,9 @@ exports.getRegions = function (instanceTypes) {
       if (data && data.Regions) {
         var promises = _.map(data.Regions, region => exports.getRegionSpots(region, instanceTypes))
         Promise.all(promises).then(resolve).catch(reject);
+      } else {
+        reject(new Error("Did not get region data from AWS"));
+        return;
       }
     });
   }).then(_.flatten);
@@ -31,10 +34,6 @@ function uniqByZoneAndType(instances) {
 
 exports.getRegionSpots = function (region, instanceTypes) {
   return new Promise(function(resolve, reject) {
-    if (!region.RegionName) {
-      resolve();
-      return;
-    }
     var ec2 = new AWS.EC2({apiVersion: '2016-04-01', region: region.RegionName});
     var params = {
       InstanceTypes: instanceTypes,
@@ -46,6 +45,7 @@ exports.getRegionSpots = function (region, instanceTypes) {
         if (err.code && err.code === 'AuthFailure') {
           console.error(chalk.red(`Auth failure in region ${region.RegionName}`))
           resolve()
+          return
         } else {
           reject(err);
           return;
@@ -73,12 +73,12 @@ exports.getRegionSpots = function (region, instanceTypes) {
   }).then(uniqByZoneAndType);
 }
 
-function handleResults (results, instanceTypes) {
+function handleResults (results, n, instanceTypes) {
   console.log('\n' + _.padEnd('Instance Type', 16) + ' ' + _.padEnd('AWS Zone', 24) + ' ' + _.padEnd('Hourly Rate', 12));
   console.log(_.pad('', 16, '-') + ' ' + _.pad('', 24, '-') + ' ' + _.pad('', 12, '-'));
   sortedInstances = _.sortBy(results, val => Number(val.lastPrice), 'zone');
-  if (program.number > 0) {
-    sortedInstances = sortedInstances.slice(0, program.number)
+  if (n > 0) {
+    sortedInstances = sortedInstances.slice(0, n)
   }
   _.each(sortedInstances, function(data) {
     var msg = _.padEnd(data.itype, 16) + ' ' + _.padEnd(data.zone, 24) + ' ' + _.padEnd('$' + data.lastPrice, 12);
@@ -99,6 +99,7 @@ function handleResults (results, instanceTypes) {
 exports.standalone = function () {
   lowPrice = false;
   lowZone = false;
+  const program = new commander.Command();
   program
     .version('0.4.0')
     .usage('[options] <EC2 instance types ...>')
@@ -108,7 +109,7 @@ exports.standalone = function () {
 
   if (program.args.length == 0) {
     program.outputHelp()
-    process.exit(1)
+    return Promise.resolve()
   }
 
   const instanceTypes = program.args
@@ -116,9 +117,9 @@ exports.standalone = function () {
 
   if (program.region) {
     console.log('Limiting results to region ' + program.region);
-    return exports.getRegionSpots({RegionName: program.region}, instanceTypes).then(_.curryRight(handleResults)(instanceTypes))
+    return exports.getRegionSpots({RegionName: program.region}, instanceTypes).then(_.curryRight(handleResults)(program.number, instanceTypes))
   } else {
-    return exports.getRegions(instanceTypes).then(_.curryRight(handleResults)(instanceTypes))
+    return exports.getRegions(instanceTypes).then(_.curryRight(handleResults)(program.number, instanceTypes))
   }
 }
 

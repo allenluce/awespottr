@@ -7,7 +7,8 @@
     "awespottr": "./cli.js"
   },
   "scripts": {
-    "test": "mocha"
+    "test": "nyc --cache mocha",
+    "coverage": "npm test && nyc report --reporter=lcov"
   },
   "author": "Joe Turgeon <arithmetric@gmail.com>",
   "license": "MIT",
@@ -20,8 +21,10 @@
   },
   "devDependencies": {
     "chai": "^4.2.0",
-    "chai-diff": "^1.0.1",
+    "chai-as-promised": "^7.1.1",
     "mocha": "^6.1.4",
-    "sinon": "^7.3.2"
+    "nyc": "^14.1.1",
+    "sinon": "^7.3.2",
+    "test-console": "^1.1.0"
   }
 }
