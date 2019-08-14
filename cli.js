@@ -8,68 +8,57 @@ const commander = require('commander')
 let lowPrice = false
 let lowZone = false
 
-exports.getRegions = function (instanceTypes) {
-  return new Promise(function(resolve, reject) {
-    const ec2 = new AWS.EC2({apiVersion: '2016-04-01', region: 'us-east-2'})
-    ec2.describeRegions({}, function(err, data) {
-      if (err) {
-        reject(err)
-        return
-      }
-      if (data && data.Regions) {
-        const promises = _.map(data.Regions, region => exports.getRegionSpots(region, instanceTypes))
-        Promise.all(promises).then(resolve).catch(reject)
-      } else {
-        reject(new Error("Did not get region data from AWS"))
-        return
-      }
-    })
-  }).then(_.flatten)
+async function getRegions(instanceTypes) {
+  const ec2 = new AWS.EC2({apiVersion: '2016-04-01', region: 'us-east-2'})
+  const data = await ec2.describeRegions().promise()
+  if (!data || !data.Regions)
+    throw new Error("Did not get region data from AWS")
+  const rData = []
+  for (let region of data.Regions) {
+    const result = await getRegionSpots(region, instanceTypes)
+    if (result) rData.push(result)
+  }
+  return _.flatten(rData)
 }
 
 function uniqByZoneAndType(instances) {
   return _.uniqBy(instances, i => i.zone + " " + i.itype)
 }
 
-exports.getRegionSpots = function (region, instanceTypes) {
-  return new Promise(function(resolve, reject) {
-    const ec2 = new AWS.EC2({apiVersion: '2016-04-01', region: region.RegionName})
-    const params = {
-      InstanceTypes: instanceTypes,
-      ProductDescriptions: ['Linux/UNIX', 'Linux/UNIX (Amazon VPC)'],
-      StartTime: moment().subtract(4, 'hours').utc().toDate()
+async function getRegionSpots(region, instanceTypes) {
+  const ec2 = new AWS.EC2({apiVersion: '2016-04-01', region: region.RegionName})
+  const params = {
+    InstanceTypes: instanceTypes,
+    ProductDescriptions: ['Linux/UNIX', 'Linux/UNIX (Amazon VPC)'],
+    StartTime: moment().subtract(4, 'hours').utc().toDate()
+  }
+  let data
+  try {
+    data = await ec2.describeSpotPriceHistory(params).promise()
+  } catch (err) {
+    if (err.code && err.code === 'AuthFailure') // Continue on auth failure
+      return console.error(chalk.red(`Auth failure in region ${region.RegionName}`))
+    throw err
+  }
+
+  if (!data || !data.SpotPriceHistory) return
+  const instances = []
+  for (let sdata of data.SpotPriceHistory) {
+    if (sdata.SpotPrice && sdata.Timestamp && sdata.AvailabilityZone) {
+      const sdate = moment(sdata.Timestamp)
+      if (!lowPrice || Number(sdata.SpotPrice) < lowPrice) {
+        lowPrice = Number(sdata.SpotPrice)
+        lowZone = sdata.AvailabilityZone
+      }
+      instances.push({
+        lastDate: sdate,
+        lastPrice: sdata.SpotPrice,
+        zone: sdata.AvailabilityZone,
+        itype: sdata.InstanceType
+      })
     }
-    ec2.describeSpotPriceHistory(params, function(err, data) {
-      if (err) {
-        if (err.code && err.code === 'AuthFailure') {
-          console.error(chalk.red(`Auth failure in region ${region.RegionName}`))
-          resolve()
-          return
-        } else {
-          reject(err)
-          return
-        }
-      }
-      if (data && data.SpotPriceHistory) {
-        const instances = _.map(data.SpotPriceHistory, sdata => {
-          if (sdata.SpotPrice && sdata.Timestamp && sdata.AvailabilityZone) {
-            const sdate = moment(sdata.Timestamp)
-            if (!lowPrice || Number(sdata.SpotPrice) < lowPrice) {
-              lowPrice = Number(sdata.SpotPrice)
-              lowZone = sdata.AvailabilityZone
-            }
-            return {
-              lastDate: sdate,
-              lastPrice: sdata.SpotPrice,
-              zone: sdata.AvailabilityZone,
-              itype: sdata.InstanceType
-            }
-          }
-        })
-        resolve(instances)
-      }
-    })
-  }).then(uniqByZoneAndType)
+  }
+  return uniqByZoneAndType(instances)
 }
 
 function handleResults (results, n, instanceTypes) {
@@ -79,7 +68,7 @@ function handleResults (results, n, instanceTypes) {
   if (n > 0) {
     sortedInstances = sortedInstances.slice(0, n)
   }
-  _.each(sortedInstances, function(data) {
+  for (let data of sortedInstances) {
     let msg = _.padEnd(data.itype, 16) + ' ' + _.padEnd(data.zone, 24) + ' ' + _.padEnd('$' + data.lastPrice, 12)
     if (data.zone === lowZone && Number(data.lastPrice) === Number(lowPrice)) {
       msg = chalk.green(msg)
@@ -87,15 +76,13 @@ function handleResults (results, n, instanceTypes) {
       msg = chalk.yellow(msg)
     }
     console.log(msg)
-  })
-  if (lowPrice) {
-    console.log('\n' + chalk.green('Cheapest hourly rate for [' + instanceTypes.join(', ') + '] is $' + lowPrice + ' in zone ' + lowZone))
-  } else {
-    console.log(chalk.yellow('No data found, did you specify a valid instance type?'))
   }
+  if (!lowPrice) 
+    return console.log(chalk.yellow('No data found, did you specify a valid instance type?'))
+  console.log('\n' + chalk.green('Cheapest hourly rate for [' + instanceTypes.join(', ') + '] is $' + lowPrice + ' in zone ' + lowZone))
 }
 
-exports.standalone = function () {
+exports.standalone = async function () {
   lowPrice = false
   lowZone = false
   const program = new commander.Command()
@@ -107,19 +94,20 @@ exports.standalone = function () {
     .parse(process.argv)
 
   if (program.args.length == 0) {
-    program.outputHelp()
-    return Promise.resolve()
+    return program.outputHelp()
   }
 
   const instanceTypes = program.args
   console.log('Checking spot prices for [' + instanceTypes.join(', ') + '] instance type(s).')
 
+  let output
   if (program.region) {
     console.log('Limiting results to region ' + program.region)
-    return exports.getRegionSpots({RegionName: program.region}, instanceTypes).then(_.curryRight(handleResults)(program.number, instanceTypes))
+    output = await getRegionSpots({RegionName: program.region}, instanceTypes)
   } else {
-    return exports.getRegions(instanceTypes).then(_.curryRight(handleResults)(program.number, instanceTypes))
+    output = await getRegions(instanceTypes)
   }
+  return handleResults(output, program.number, instanceTypes)
 }
 
 if (!module.parent) {

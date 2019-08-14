@@ -106,29 +106,30 @@ const RESULTS = {
         SpotPrice: '1.457100',
         Timestamp: '2019-03-06T00:54:47.000Z' }
     ]
-
   }
 }
-
 
 module.exports = class EC2Stub {
   constructor (params) {
     this.region = params.region
   }
 
-  describeRegions(params = {}, callback) {
-    callback(null, {
-      Regions: [
-        { Endpoint: 'ec2.eu-north-1.amazonaws.com',
-          RegionName: 'eu-north-1' },
-        { Endpoint: 'ec2.us-east-1.amazonaws.com',
-          RegionName: 'us-east-1' },
-        { Endpoint: 'ec2.us-west-2.amazonaws.com',
-          RegionName: 'us-west-2' }
-      ]
-    })
+  describeRegions() {
+    return {
+      promise: () => ({
+        Regions: [
+          { Endpoint: 'ec2.eu-north-1.amazonaws.com',
+            RegionName: 'eu-north-1' },
+          { Endpoint: 'ec2.us-east-1.amazonaws.com',
+            RegionName: 'us-east-1' },
+          { Endpoint: 'ec2.us-west-2.amazonaws.com',
+            RegionName: 'us-west-2' }
+        ]
+      })
+    }
   }
-  describeSpotPriceHistory(params = {}, callback) {
+  
+  describeSpotPriceHistory(params = {}) {
     const results = {
       NextToken: '',
       SpotPriceHistory: []
@@ -138,6 +139,6 @@ module.exports = class EC2Stub {
         results.SpotPriceHistory = results.SpotPriceHistory.concat(RESULTS[this.region][itype])
       }
     }
-    callback(null, results)
+    return {promise: () => results}
   }
 }
